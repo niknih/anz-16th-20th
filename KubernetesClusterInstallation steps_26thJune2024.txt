@@ -1,0 +1,85 @@
+Kubernetes installation steps:
+
+
+1. create a script on each machine
+
+vi script.sh
+
+#!/bin/bash
+
+# Update package lists and install Docker
+sudo apt update -y
+sudo apt install docker.io -y
+
+# Set up Kubernetes repository and install kubelet, kubeadm, and kubectl
+sudo mkdir -p -m 755 /etc/apt/keyrings
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+sudo apt-get update
+sudo apt-get install -y kubelet kubeadm kubectl
+
+# Enable net.bridge.bridge-nf-call-iptables
+sudo sysctl net.bridge.bridge-nf-call-iptables=1
+
+# Download and install cri-dockerd
+wget https://github.com/Mirantis/cri-dockerd/releases/download/v0.3.14/cri-dockerd-0.3.14.amd64.tgz
+tar -xvf cri-dockerd-0.3.14.amd64.tgz
+cd cri-dockerd
+sudo install -o root -g root -m 0755 cri-dockerd /usr/local/bin/cri-dockerd
+
+# Download and set up cri-dockerd systemd service
+cd ..
+wget https://github.com/Mirantis/cri-dockerd/archive/refs/tags/v0.3.14.tar.gz
+tar -xvf v0.3.14.tar.gz
+cd cri-dockerd-0.3.14/
+sudo cp packaging/systemd/* /etc/systemd/system
+sudo sed -i -e 's,/usr/bin/cri-dockerd,/usr/local/bin/cri-dockerd,' /etc/systemd/system/cri-docker.service
+
+# Enable and start cri-docker service
+sudo systemctl daemon-reload
+sudo systemctl enable --now cri-docker.socket
+sudo systemctl enable cri-docker
+sudo systemctl start cri-docker
+sudo systemctl status cri-docker
+
+
+2. create a config file on the master machine and mention the master node private ip address (advertiseAddress)
+
+vi config.yaml
+
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: 172.31.3.203
+  bindPort: 6443
+nodeRegistration:
+  criSocket: unix:///var/run/cri-dockerd.sock
+---
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+networking:
+  podSubnet: 192.168.0.0/16
+
+
+kubeadm init --config=config.yaml >> cluster_initialized.txt
+
+
+
+3. cat cluster_initialized.txt     # run below commands 
+
+
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+
+
+4. install the calico plugin on master node
+
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.25.0/manifests/calico.yaml
+
+5. join the worker node using --cri-socket unix:///var/run/cri-dockerd.sock
+
+kubeadm join 172.31.3.203:6443 --token 7gy0n6.gycf0eed7x3lihdj \
+        --discovery-token-ca-cert-hash sha256:6dc79151d4cd2c5e1e05e912f7935cf4cae1df149a2f3a74a62d84ee8bbe3cbf \
+        --cri-socket unix:///var/run/cri-dockerd.sock
